@@ -79,3 +79,9 @@ sad.example$retro <- with(sad.example, case_when(
         TRUE ~ end                                        # Step 4: default to end
     )
   )
+
+# Idea: Emotional differentiation -- ability to label emotions with precision rather than categorize them as good or bad
+# Could capture that with intra-individual standard deviation
+# In the literature it says: ability to differentiate emotions is associated with affect regulation
+# Low emotional granularity -> more carry-over effects because you haven't necessarily processed emotions at previous times
+
