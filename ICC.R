@@ -1,12 +1,36 @@
+# ===========================================================================
+# Project:      State and Trait Emotional Granularity Analysis
+# Date created: 2026-03-24
+# Last updated: 2026-04-18
+#
+# Description:
+#   Computes multiple operationalizations of emotional granularity from EMA 
+#   data and examines their psychometric properties. Specifically:
+#     (1) State granularity (Lane & Trull's within-moment ICC)
+#     (2) Trait granularity (Hoemann et al.'s person-level ICC,Ebras's two ICCs)
+#     (3) Momentary emotional differentiation (Ebras et al.'s approach
+#         via the emodiff package)
+#
+#   Analyses address whether state granularity reflects stable individual
+#   differences, whether its within-person dynamics (MSSD, SD, 
+#   autocorrelation) overlap with simpler affect dynamics measures, and
+#   how the different granularity operationalizations relate to each
+#   other and to personality traits.
+#
+# Data sources:
+#   - EMA data:          expiwell_03052025.sav
+#   - Qualtrics baseline: qualtrics_02172025.sav
+# ===========================================================================
 library(haven)
-library(tidyr)
-library(dplyr)
-library(ggplot2)
+library(tidyverse)
+library(easystats)
 library(tseries)
-library(purrr)
 library(lme4)
-library(performance)
 library(lmerTest) 
+install.packages('devtools')
+library(devtools)
+install_github("seanchrismurphy/emodiff")
+library(emodiff)
 
 wide <- read_sav('/Users/wangxinran/Library/CloudStorage/GoogleDrive-wangx225@wfu.edu/Shared drives/EMA/Data/latest/expiwell_03052025.sav')
 wide <- subset(wide, wide$which != "weekly")
@@ -191,7 +215,7 @@ id_lookup <- wide[, c("mplusID", "LoginID")]
 # keep only unique combinations (one row per person)
 id_lookup <- unique(id_lookup)
 
-# merge onto your summary dataframe
+# merge onto the summary dataframe
 ACF_merged <- left_join(ACF_merged, id_lookup, by = "mplusID")
 
 # convert LoginID to character in both
@@ -229,14 +253,7 @@ wide %>%
 #state granularity 
 sum(is.na(ICCdata$granularity))
 
-#impute missing data with person-level mean (granularity+emotions)
-#granularity
-ICCdata <- ICCdata %>%
-  group_by(mplusID) %>%
-  mutate(granularity = ifelse(is.na(granularity), mean(granularity, na.rm = TRUE), granularity)) %>%
-  ungroup()
-
-#emotions
+#impute missing emotions data with person-level mean 
 wide <- wide %>%
   group_by(mplusID) %>%
   mutate(across(all_of(emotions), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
@@ -245,7 +262,6 @@ wide <- wide %>%
 # verify imputation
 wide %>%
   summarise(across(all_of(emotions), ~ sum(is.na(.))))
-sum(is.na(ICCdata$granularity))
 
 #Trait emotional granularity (Hoemann et al., 2020)
 #group emotions by positive and negative affect
@@ -411,3 +427,112 @@ summary(O1)
 #trait granularity
 O2 <- lm(OpenMindedness ~ trait.granularity + mean_PA + mean_NA, data = person_level)
 summary(O2)
+
+# ---- Ebras et al. Emotion Differentiation (ED) Calculation ----
+# Computes six measures from Erbas et al. / Murphy's emodiff package:
+#   c_nonED - classic non-differentiation (person-level, ICC3k of emotions over time)
+#   c_ED    - classic ED (inverse of c_nonED)
+#   m_nonED - momentary non-differentiation (varies by time point)
+#   m_ED    - momentary ED
+#   L2_nonED, L2_ED - person-level ED aggregated from momentary measures
+#   These should be calculated seperately for positive and negative affect
+
+# Inspect observation counts per participant
+n_observations <- wide %>% 
+  count(mplusID) %>% 
+  arrange(n)
+hist(n_observations$n)
+
+# Filter for ED calculation:
+# - At least 5 (??) observations per person (needed to estimate within-person variance)
+#######this needs to be checked############
+# - Nonzero variance on every emotion (otherwise ICC can't be computed)
+# Note: this filter applies only to ED analyses; other analyses use full `wide` dataset
+ed_input <- wide %>% 
+  group_by(mplusID) %>% 
+  filter(n() >= 5) %>% 
+  ungroup()
+# Calculating momenary granularity for PA and NA seperately
+calculate_ed_prefixed <- function(dat, emotions, prefix, ...) {
+  ed_cols <- c("m_nonED", "m_ED", "c_ED", "c_nonED", "L2_nonED", "L2_ED")
+  calculate_ed(dat=dat,emotions=emotions,...) %>%
+    rename_with(~ paste0(prefix, "_", .x), .cols = all_of(ed_cols))}
+# PA/NA momentary granularity
+result_PA <- calculate_ed_prefixed(ed_input, PAf, "PA", mplusID)
+result_NA <- calculate_ed_prefixed(ed_input, NAf, "NA", mplusID)
+
+# Create a data frame storing the two versions of momentary granularity 
+momentary <- ICCdata %>% 
+  select(-half) %>% 
+  left_join(select(result_PA, mplusID, hours, PA_m_ED), by = c("mplusID", "hours")) %>% 
+  left_join(select(result_NA, mplusID, hours, NA_m_ED), by = c("mplusID", "hours"))
+#compute the mean of positive and negative momentary ED
+momentary <- momentary %>% 
+  mutate(mean_m_ED = (PA_m_ED + NA_m_ED) / 2)
+
+# ---- Plot Momentary ED ----
+#select a subset to plot
+subset <- subset(momentary, momentary$mplusID < 26)
+
+#Plot lines
+ggplot(subset, aes(x = hours, y = mean_m_ED, group = mplusID, color = factor(mplusID))) +
+  geom_line(alpha = 0.4) +
+  theme_minimal() +
+  labs(x = "Hours", y = "Momentary ED", title = "Momentary ED Over Time by Person") +
+  theme(legend.position = "none")
+
+#smoothed lines
+ggplot(subset, aes(x = hours, y = mean_m_ED, group = mplusID, color = factor(mplusID))) +
+  geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
+  theme_minimal() +
+  labs(x = "Hours", y = "Momentary ED", title = "Momentary ED Over Time by Person") +
+  theme(legend.position = "none")
+
+#positive momentary ED
+ggplot(subset, aes(x = hours, y = PA_m_ED, group = mplusID, color = factor(mplusID))) +
+  geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
+  theme_minimal() +
+  labs(x = "Hours", y = "Momentary Positive ED", title = "Momentary Positive ED Over Time by Person") +
+  theme(legend.position = "none")
+
+#negative momentary ED
+ggplot(subset, aes(x = hours, y = NA_m_ED, group = mplusID, color = factor(mplusID))) +
+  geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
+  theme_minimal() +
+  labs(x = "Hours", y = "Momentary Negative ED", title = "Momentary Negative ED Over Time by Person") +
+  theme(legend.position = "none")
+
+#correlate the two momentary granularity measures (r=0.05)
+library(correlation)
+momentary %>% 
+  mutate(mplusID = as.factor(mplusID)) %>% 
+  correlation(select = c("granularity", "mean_m_ED", "mplusID"),
+              multilevel = TRUE,
+              include_factors = TRUE)
+
+# ---- individual differences (momentary ED) ----
+model2 <- lmer(mean_m_ED ~ 1 + (1|mplusID), data = momentary)
+summary(model2)
+icc(model2) #high icc - strong individual differences; low icc - granularity fluctuates within people more than it differs between people(?)
+#icc=.011 
+#no reliable individual differences, the measure is very "state-like"?
+
+#merge classic ED and L2ED with person level data
+person_level <- person_level %>% 
+  left_join(result_PA %>% 
+              select(mplusID, PA_c_ED, PA_L2_ED) %>% 
+              distinct(),
+            by = "mplusID") %>% 
+  left_join(result_NA %>% 
+              select(mplusID, NA_c_ED, NA_L2_ED) %>% 
+              distinct(),
+            by = "mplusID")
+#get the mean of positive and negative person_level ED
+person_level <- person_level %>% 
+  mutate(mean_c_ED = (PA_c_ED + NA_c_ED) / 2) %>% 
+  mutate(mean_L2_ED = (PA_L2_ED + NA_L2_ED) / 2)
+
+#correlate mean state granularity (from Lane&Trull) with the three person_level ICCs
+person_level %>% 
+  select(mean_granularity, trait.granularity, mean_c_ED, mean_L2_ED,PA_c_ED,PA_L2_ED, NA_c_ED,NA_L2_ED) %>% 
+  correlation()
