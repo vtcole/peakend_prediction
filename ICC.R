@@ -6,10 +6,10 @@
 # Description:
 #   Computes multiple operationalizations of emotional granularity from EMA 
 #   data and examines their psychometric properties. Specifically:
-#     (1) State granularity (Lane & Trull's within-moment ICC)
-#     (2) Trait granularity (Hoemann et al.'s person-level ICC,Ebras's two ICCs)
-#     (3) Momentary emotional differentiation (Ebras et al.'s approach
+#     (1) State granularity measure 1 (Lane & Trull's within-moment ICC)
+#     (2) State granularity measure 2 (Ebras et al.'s state measure
 #         via the emodiff package)
+#     (3) Trait granularity (Hoemann et al.'s person-level ICC,Ebras's two ICCs)
 #
 #   Analyses address whether state granularity reflects stable individual
 #   differences, whether its within-person dynamics (MSSD, SD, 
@@ -21,19 +21,29 @@
 #   - EMA data:          expiwell_03052025.sav
 #   - Qualtrics baseline: qualtrics_02172025.sav
 # ===========================================================================
+
+list.of.packages <- c("haven", "tidyverse", "easystats","tseries", "lme4","lmerTest","devtools","ggcorrplot")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+library(devtools)
+if (!requireNamespace("emodiff", quietly = TRUE)) {
+  devtools::install_github("seanchrismurphy/emodiff")}
+
 library(haven)
 library(tidyverse)
 library(easystats)
 library(tseries)
 library(lme4)
 library(lmerTest) 
-install.packages('devtools')
-library(devtools)
-install_github("seanchrismurphy/emodiff")
 library(emodiff)
+library(ggcorrplot)
 
+#get EMA data
 wide <- read_sav('/Users/wangxinran/Library/CloudStorage/GoogleDrive-wangx225@wfu.edu/Shared drives/EMA/Data/latest/expiwell_03052025.sav')
 wide <- subset(wide, wide$which != "weekly")
+#get qualtrics data
+qualtrics<- read_sav('/Users/wangxinran/Library/CloudStorage/GoogleDrive-wangx225@wfu.edu/Shared drives/EMA/Qualtrics Data Management/qualtrics_02172025.sav')
+
 
 #get rid of participant 26, with only 1 observation and all the values missing
 wide <- wide %>%
@@ -96,21 +106,21 @@ ICCdata <- long %>%
   group_modify(~ get.ICC(.x) %>% as.data.frame()) %>%
   ungroup()
 
-names(ICCdata)[3] <- "granularity"
+names(ICCdata)[3] <- "gran1_state"
 
 #Let's plot it!
 #First, just select a subset
 subdata <- subset(ICCdata, ICCdata$mplusID < 26)
 
 #Now plot lines
-ggplot(subdata, aes(x = hours, y = granularity, group = mplusID, color = factor(mplusID))) +
+ggplot(subdata, aes(x = hours, y = gran1_state, group = mplusID, color = factor(mplusID))) +
   geom_line(alpha = 0.4) +
   theme_minimal() +
   labs(x = "Hours", y = "Granularity", title = "Granularity Over Time by Person") +
   theme(legend.position = "none")
 
 #Now plot ~*~smoothed~*~ lines
-ggplot(subdata, aes(x = hours, y = granularity, group = mplusID, color = factor(mplusID))) +
+ggplot(subdata, aes(x = hours, y = gran1_state, group = mplusID, color = factor(mplusID))) +
   geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
   theme_minimal() +
   labs(x = "Hours", y = "Granularity", title = "Granularity Over Time by Person") +
@@ -129,36 +139,34 @@ get.ACF <- function(x,var) {
 }
 
 #calculating autocorrelations of state granularity, PA and NA (temporary, will be merged into person_level)
-#granularity inertia
-G_inertia <- ICCdata %>% 
+#granularity 
+gran1_ac_df <- ICCdata %>% 
   group_by(mplusID) %>%
-  group_modify(~ get.ACF(.x, var = "granularity") %>% as.data.frame()) %>%
+  group_modify(~ get.ACF(.x, var = "gran1_state") %>% as.data.frame()) %>%
   filter(lag == 1) %>%
-  summarise(G_inertia = acf) %>%
+  summarise(gran1_ac = acf) %>%
   ungroup() 
 
-#PA inertia
-PA_inertia <- wide %>%
+#PA 
+pa_ac_df <- wide %>%
   group_by(mplusID) %>%
   group_modify(~ get.ACF(.x, var = "positive") %>% as.data.frame()) %>%
   filter(lag == 1) %>%
-  summarise(PA_inertia = acf) %>%
+  summarise(pa_ac = acf) %>%
   ungroup() 
 
-#NA inertia 
-NA_inertia <- wide %>%
+#NA  
+na_ac_df <- wide %>%
   group_by(mplusID) %>%
   group_modify(~ get.ACF(.x, var = "negative") %>% as.data.frame()) %>%
   filter(lag == 1) %>%
-  summarise(NA_inertia = acf) %>%
+  summarise(na_ac = acf) %>%
   ungroup() 
 
 #merge the three person-level ACFs and mean granularity
-ACF_merged <- list(G_inertia, PA_inertia , NA_inertia) %>%
+ac_merged_df <- list(gran1_ac_df, pa_ac_df , na_ac_df) %>%
   reduce(left_join, by = "mplusID")
 
-#get qualtrics data
-qualtrics<- read_sav('/Users/wangxinran/Library/CloudStorage/GoogleDrive-wangx225@wfu.edu/Shared drives/EMA/Qualtrics Data Management/qualtrics_02172025.sav')
 #Qualtrics data management
 ## Removing trial rounds from the dataset
 BaselineData_Participants <- subset(qualtrics, is.na(Q6_1) == FALSE)
@@ -216,17 +224,17 @@ id_lookup <- wide[, c("mplusID", "LoginID")]
 id_lookup <- unique(id_lookup)
 
 # merge onto the summary dataframe
-ACF_merged <- left_join(ACF_merged, id_lookup, by = "mplusID")
+ac_merged_df <- left_join(ac_merged_df, id_lookup, by = "mplusID")
 
 # convert LoginID to character in both
-ACF_merged <- ACF_merged %>%
+ac_merged_df <- ac_merged_df %>%
   mutate(LoginID = as.character(LoginID))
 
 Personality <- Personality %>%
   mutate(LoginID = as.character(LoginID))
 
 #merge granularity with big five and ego resilience 
-person_level <- left_join(ACF_merged,Personality,by = "LoginID")
+person_level <- left_join(ac_merged_df,Personality,by = "LoginID")
 
 #calculating intra-individual standard deviation and mean state granularity
 person_level <- person_level %>%
@@ -234,8 +242,8 @@ person_level <- person_level %>%
     ICCdata %>%
     group_by(mplusID) %>%
     summarise(
-      mean_granularity = mean(granularity, na.rm = TRUE),
-      sd_granularity = sd(granularity, na.rm = TRUE)
+      gran1_mean = mean(gran1_state, na.rm = TRUE),
+      gran1_sd = sd(gran1_state, na.rm = TRUE)
   ),
   by = "mplusID"
 )
@@ -251,7 +259,7 @@ emotions <- c("amused", "awe", "content", "glad", "grateful",
 wide %>%
   summarise(across(all_of(emotions), ~ sum(is.na(.))))
 #state granularity 
-sum(is.na(ICCdata$granularity))
+sum(is.na(ICCdata$gran1_state))
 
 #impute missing emotions data with person-level mean 
 wide <- wide %>%
@@ -270,6 +278,7 @@ PAf <- c("amused", "awe", "content", "glad", "grateful",
 NAf <- c("angry", "ashamed", "contemptuous", "disgust", "embarrassed", 
               "hate", "repentant", "sad", "scared", "stressed")
 
+#validation measure 1
 #calculate person-specific ICC separately for positive and negative affect and then average, to avoid negative ICC values
 #Take Hoemann's MATLAB code and translate into R (without the F test)
 #ICC type: A-k (two-way mixed effect, mean of k measures, absolute agreement)
@@ -287,8 +296,8 @@ ICC.positive <- function(person_data){
   MSC <- var(colMeans(person_data))*n #mean square for columns (main effect of discrete positive emotions[within])
   MSE <- (SStotal - MSR*(n-1) - MSC*(k-1))/((n-1)*(k-1)) #error variance after accounting for the two between-effects (MSR and MSC are converted back to SS to calculate residual sum of squares, then divide by the residual degrees of freedom)
   ##step3:calculating ICC
-  ICC.PAf <- (MSR - MSE) / (MSR + (MSC-MSE)/n)
-  return(ICC.PAf)
+  val1_nondiff_pa <- (MSR - MSE) / (MSR + (MSC-MSE)/n)
+  return(val1_nondiff_pa)
 }
 #function for person-specific negative affect granularity
 ICC.negative <- function(person_data){
@@ -303,18 +312,18 @@ ICC.negative <- function(person_data){
   MSC <- var(colMeans(person_data))*n #mean square for columns (main effect of discrete negative emotions[within])
   MSE <- (SStotal - MSR*(n-1) - MSC*(k-1))/((n-1)*(k-1)) #left-over variance after accounting for the two between-effects (MSR and MSC are converted back to SS to calculate residual sum of squares, then divide by the residual degrees of freedom)
   ##step3:calculating ICC
-  ICC.NAf <- (MSR - MSE) / (MSR + (MSC-MSE)/n)
-  return(ICC.NAf)
+  val1_nondiff_na <- (MSR - MSE) / (MSR + (MSC-MSE)/n)
+  return(val1_nondiff_na)
 }
 
 #calculate person-specific PA/NA and trait granularity scores using the functions, and merge with the person_level data
 person_level <- wide %>%
   group_by(mplusID) %>%
   group_modify(~ data.frame(
-    ICC.PAf = ICC.positive(.x),
-    ICC.NAf = ICC.negative(.x)
+    val1_nondiff_pa = ICC.positive(.x),
+    val1_nondiff_na = ICC.negative(.x)
   )) %>%
-  mutate(trait.granularity = (ICC.PAf + ICC.NAf) / 2) %>%
+  mutate(val1_nondiff_avg = (val1_nondiff_pa + val1_nondiff_na) / 2) %>%
   ungroup() %>%
   left_join(person_level, by = "mplusID")
 
@@ -323,7 +332,7 @@ person_level <- person_level %>%
   left_join(
     ICCdata %>%
       group_by(mplusID) %>%
-      summarise(mssd_granularity = mean(diff(granularity)^2, na.rm = TRUE)),
+      summarise(gran1_mssd = mean(diff(gran1_state)^2, na.rm = TRUE)),
     by = "mplusID"
   )
 # Note: Person-level ICC not computed for state granularity --
@@ -335,8 +344,8 @@ person_level <- person_level %>%
     wide %>%
       group_by(mplusID) %>%
       summarise(
-        mssd_positive = mean(diff(positive)^2, na.rm = TRUE),
-        mssd_negative = mean(diff(negative)^2, na.rm = TRUE)
+        pa_mssd = mean(diff(positive)^2, na.rm = TRUE),
+        na_mssd = mean(diff(negative)^2, na.rm = TRUE)
         ),
     by = "mplusID"
   )
@@ -357,7 +366,7 @@ rcorr(as.matrix(cor_data))
 #See if there are stable individual differences in state granularity
 #this can potentially inform us whether a state/trait approach is more suitable in studying granularity(?)
 #use MLM to estimate sample-level ICC, given all the missing data
-model <- lmer(granularity ~ 1 + (1|mplusID), data = ICCdata)
+model <- lmer(gran1_state ~ 1 + (1|mplusID), data = ICCdata)
 summary(model)
 icc(model) #high icc - strong individual differences; low icc - granularity fluctuates within people more than it differs between people(?)
 #ICC= .443 (This suggests both state/trait approaches are appropriate?)
@@ -368,16 +377,16 @@ r2(model) #conditional: .443, marginal: .000
 ICCdata <- ICCdata %>%
   mutate(hours_scaled = scale(hours))
 #model with random intercept and slope
-model_time <- lmer(granularity ~ hours_scaled + (hours_scaled | mplusID), data = ICCdata)
+model_time <- lmer(gran1_state ~ hours_scaled + (hours_scaled | mplusID), data = ICCdata)
 summary(model_time)
 icc(model_time) #ICC=.468
 r2(model_time) #conditional: .469, marginal: .002
 
 #are there meaningful individual differneces in baseline granularity and the effect of time?
 #dropping the random intercept 
-model0_time <- lmer(granularity ~ hours_scaled + (0+hours_scaled | mplusID), data = ICCdata)
+model0_time <- lmer(gran1_state ~ hours_scaled + (0+hours_scaled | mplusID), data = ICCdata)
 #dropping the random slope
-model1_time <- lmer(granularity ~ hours_scaled + (1 | mplusID), data = ICCdata)
+model1_time <- lmer(gran1_state ~ hours_scaled + (1 | mplusID), data = ICCdata)
 
 #model comparison
 anova(model_time,model0_time,model1_time)
@@ -392,8 +401,8 @@ ICCdata <- ICCdata %>%
 # compute mean granularity per half per person
 split_half <- ICCdata %>%
   group_by(mplusID, half) %>%
-  summarise(mean_granularity = mean(granularity, na.rm = TRUE)) %>%
-  pivot_wider(names_from = half, values_from = mean_granularity)
+  summarise(gran1_mean = mean(gran1_state, na.rm = TRUE)) %>%
+  pivot_wider(names_from = half, values_from = gran1_mean)
 
 # correlate the two halves
 cor.test(split_half$first, split_half$second)
@@ -413,19 +422,19 @@ person_level <- person_level %>%
   )
 #granularity and personality
 
-#Controlling for PA/NA, what is the relationship between mean state granularity and neuroticism
-N1 <- lm(NegativeEmotionality ~ mean_granularity + mean_PA + mean_NA, data = person_level)
+#Controlling for PA/NA, what is the relationship between granularity measure 1 and neuroticism
+N1 <- lm(NegativeEmotionality ~ gran1_mean + mean_PA + mean_NA, data = person_level)
 summary(N1)
-#now do the same with trait granularity
-N2 <- lm(NegativeEmotionality ~ trait.granularity + mean_PA + mean_NA, data = person_level)
+#now do the same with validation measure 1
+N2 <- lm(NegativeEmotionality ~ val1_nondiff_avg + mean_PA + mean_NA, data = person_level)
 summary(N2)
 
 #now Openness
 #mean state granularity
-O1 <- lm(OpenMindedness ~ mean_granularity + mean_PA + mean_NA, data = person_level)
+O1 <- lm(OpenMindedness ~ gran1_mean + mean_PA + mean_NA, data = person_level)
 summary(O1)
 #trait granularity
-O2 <- lm(OpenMindedness ~ trait.granularity + mean_PA + mean_NA, data = person_level)
+O2 <- lm(OpenMindedness ~ val1_nondiff_avg + mean_PA + mean_NA, data = person_level)
 summary(O2)
 
 # ---- Ebras et al. Emotion Differentiation (ED) Calculation ----
@@ -444,13 +453,12 @@ n_observations <- wide %>%
 hist(n_observations$n)
 
 # Filter for ED calculation:
-# - At least 5 (??) observations per person (needed to estimate within-person variance)
-#######this needs to be checked############
+# - At least 2 observations per person (needed to estimate within-person variance)
 # - Nonzero variance on every emotion (otherwise ICC can't be computed)
 # Note: this filter applies only to ED analyses; other analyses use full `wide` dataset
 ed_input <- wide %>% 
   group_by(mplusID) %>% 
-  filter(n() >= 5) %>% 
+  filter(n() >= 2) %>% 
   ungroup()
 # Calculating momenary granularity for PA and NA seperately
 calculate_ed_prefixed <- function(dat, emotions, prefix, ...) {
@@ -470,33 +478,41 @@ momentary <- ICCdata %>%
 momentary <- momentary %>% 
   mutate(mean_m_ED = (PA_m_ED + NA_m_ED) / 2)
 
+# ---- Rename measure 2 variables to match naming convention ----
+# momentary (state-level) variables
+momentary <- momentary %>%
+  rename(
+    gran2_ed_pa = PA_m_ED,
+    gran2_ed_na = NA_m_ED,
+    gran2_state = mean_m_ED
+  )
 # ---- Plot Momentary ED ----
 #select a subset to plot
-subset <- subset(momentary, momentary$mplusID < 26)
+momentary_sub <- subset(momentary, momentary$mplusID < 26)
 
 #Plot lines
-ggplot(subset, aes(x = hours, y = mean_m_ED, group = mplusID, color = factor(mplusID))) +
+ggplot(momentary_sub, aes(x = hours, y = gran2_state, group = mplusID, color = factor(mplusID))) +
   geom_line(alpha = 0.4) +
   theme_minimal() +
-  labs(x = "Hours", y = "Momentary ED", title = "Momentary ED Over Time by Person") +
+  labs(x = "Hours", y = "Granularity2", title = "Granularity2 Over Time by Person") +
   theme(legend.position = "none")
 
 #smoothed lines
-ggplot(subset, aes(x = hours, y = mean_m_ED, group = mplusID, color = factor(mplusID))) +
+ggplot(momentary_sub, aes(x = hours, y = gran2_state, group = mplusID, color = factor(mplusID))) +
   geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
   theme_minimal() +
-  labs(x = "Hours", y = "Momentary ED", title = "Momentary ED Over Time by Person") +
+  labs(x = "Hours", y = "Granularity2", title = "Granularity2 Over Time by Person") +
   theme(legend.position = "none")
 
 #positive momentary ED
-ggplot(subset, aes(x = hours, y = PA_m_ED, group = mplusID, color = factor(mplusID))) +
+ggplot(momentary_sub, aes(x = hours, y = gran2_ed_pa, group = mplusID, color = factor(mplusID))) +
   geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
   theme_minimal() +
   labs(x = "Hours", y = "Momentary Positive ED", title = "Momentary Positive ED Over Time by Person") +
   theme(legend.position = "none")
 
 #negative momentary ED
-ggplot(subset, aes(x = hours, y = NA_m_ED, group = mplusID, color = factor(mplusID))) +
+ggplot(momentary_sub, aes(x = hours, y = gran2_ed_na, group = mplusID, color = factor(mplusID))) +
   geom_smooth(se = FALSE, method = "loess", linewidth = 0.8) +
   theme_minimal() +
   labs(x = "Hours", y = "Momentary Negative ED", title = "Momentary Negative ED Over Time by Person") +
@@ -506,12 +522,12 @@ ggplot(subset, aes(x = hours, y = NA_m_ED, group = mplusID, color = factor(mplus
 library(correlation)
 momentary %>% 
   mutate(mplusID = as.factor(mplusID)) %>% 
-  correlation(select = c("granularity", "mean_m_ED", "mplusID"),
+  correlation(select = c("gran1_state", "gran2_state", "mplusID"),
               multilevel = TRUE,
               include_factors = TRUE)
 
 # ---- individual differences (momentary ED) ----
-model2 <- lmer(mean_m_ED ~ 1 + (1|mplusID), data = momentary)
+model2 <- lmer(gran2_state ~ 1 + (1|mplusID), data = momentary)
 summary(model2)
 icc(model2) #high icc - strong individual differences; low icc - granularity fluctuates within people more than it differs between people(?)
 #icc=.011 
@@ -532,7 +548,34 @@ person_level <- person_level %>%
   mutate(mean_c_ED = (PA_c_ED + NA_c_ED) / 2) %>% 
   mutate(mean_L2_ED = (PA_L2_ED + NA_L2_ED) / 2)
 
-#correlate mean state granularity (from Lane&Trull) with the three person_level ICCs
-person_level %>% 
-  select(mean_granularity, trait.granularity, mean_c_ED, mean_L2_ED,PA_c_ED,PA_L2_ED, NA_c_ED,NA_L2_ED) %>% 
-  correlation()
+#rename to match naming convention
+person_level <- person_level %>%
+  rename(
+    val2_avg = mean_c_ED,
+    gran2_mean = mean_L2_ED,
+    gran2_pa_mean = PA_L2_ED,
+    gran2_na_mean = NA_L2_ED)
+
+#FYP Poster graphs
+#person_level correlation matrix
+measure1 <- cor(
+  person_level %>% select(gran1_mean, val1_nondiff_avg, val2_avg, 
+                          gran2_mean, NegativeEmotionality, OpenMindedness),
+  use = "complete.obs"
+)
+
+ggcorrplot(measure1,
+           method = "square",
+           type = "full",            # show full matrix
+           lab = TRUE,               # show correlation values
+           lab_size = 3,
+           colors = c("red", "white", "blue"),
+           title = "Person-level Correlation Matrix",
+           ggtheme = theme_minimal() +
+             theme(
+               plot.title = element_text(size = 14, hjust = 0.5),
+               axis.text.x = element_text(angle = 45, hjust = 1, size = 9),  # fix x labels
+               axis.text.y = element_text(size = 9),
+               plot.margin = margin(10, 40, 10, 10)  # add right margin for cutoff
+             ))
+           
